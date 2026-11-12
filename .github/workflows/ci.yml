@@ -46,7 +46,7 @@ jobs:
       - run: python3 tests/http_smoke.py dist/caddyforge
       - name: Package executable permissions intact
         run: tar -C dist -czf caddyforge.tar.gz caddyforge
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: caddyforge-${{ matrix.runner }}-go${{ matrix.go }}-${{ matrix.profile }}
           path: caddyforge.tar.gz
