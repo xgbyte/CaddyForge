@@ -1,0 +1,10 @@
+# Replace the domain and email. Validation may contact Cloudflare.
+{
+	email admin@example.com
+}
+example.com {
+	tls {
+		dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+	}
+	reverse_proxy 127.0.0.1:9000
+}

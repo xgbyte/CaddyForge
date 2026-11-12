@@ -1,0 +1,6 @@
+/.tools/
+/dist/
+*.env
+!*.env.example
+*.log
+/buildenv_*/

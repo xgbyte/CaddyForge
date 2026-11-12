@@ -1,0 +1,54 @@
+name: Verify and build
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: caddyforge-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ShellCheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - run: bash tests/run.sh
+      - run: shellcheck -x scripts/*.sh tests/*.sh
+  build:
+    needs: checks
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+        go: ['1.26.x', '1.27.x']
+        profile: [default, ratelimit]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+          cache: false
+      - run: ./scripts/bootstrap.sh --install-xcaddy
+      - name: Select plugin profile
+        env:
+          PROFILE: ${{ matrix.profile }}
+        run: |
+          cp config/plugins.conf /tmp/caddyforge-plugins.conf
+          if [[ "$PROFILE" == ratelimit ]]; then
+            sed -i 's/^0 github.com\/mholt\//1 github.com\/mholt\//' /tmp/caddyforge-plugins.conf
+          fi
+      - run: ./scripts/build.sh dist/caddyforge /tmp/caddyforge-plugins.conf
+      - run: ./scripts/verify.sh dist/caddyforge
+      - run: python3 tests/http_smoke.py dist/caddyforge
+      - name: Package executable permissions intact
+        run: tar -C dist -czf caddyforge.tar.gz caddyforge
+      - uses: actions/upload-artifact@v4
+        with:
+          name: caddyforge-${{ matrix.runner }}-go${{ matrix.go }}-${{ matrix.profile }}
+          path: caddyforge.tar.gz
+          if-no-files-found: error
+          retention-days: 14

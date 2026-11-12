@@ -1,0 +1,18 @@
+# Local WAF smoke test. Embedded CRS is provided by the pinned Coraza plugin.
+{
+	admin off
+	auto_https off
+	order coraza_waf first
+}
+http://127.0.0.1:8081 {
+	coraza_waf {
+		load_owasp_crs
+		directives `
+            Include @coraza.conf-recommended
+            Include @crs-setup.conf.example
+            Include @owasp_crs/*.conf
+            SecRuleEngine On
+        `
+	}
+	respond "WAF enabled" 200
+}

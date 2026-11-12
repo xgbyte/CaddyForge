@@ -1,0 +1,8 @@
+# Safe first-start configuration: no public listener and no ACME requests.
+{
+	admin localhost:2019
+}
+http://127.0.0.1:8080 {
+	respond /healthz "ok" 200
+	respond "CaddyForge is ready" 200
+}
