@@ -1,0 +1,153 @@
+name: Publish release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate CaddyForge release tag
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
+            echo 'Expected a tag such as v0.1.0 or v0.1.0-rc.1' >&2
+            exit 1
+          fi
+      - name: Install ShellCheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - run: bash tests/run.sh
+      - run: shellcheck -x scripts/*.sh tests/*.sh
+
+  build:
+    needs: checks
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+            profile: default
+          - runner: ubuntu-24.04
+            arch: amd64
+            profile: ratelimit
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+            profile: default
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+            profile: ratelimit
+    runs-on: ${{ matrix.runner }}
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+      ARCH: ${{ matrix.arch }}
+      PROFILE: ${{ matrix.profile }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          cache: false
+      - name: Check native target
+        run: |
+          test "$(go env GOHOSTOS)" = linux
+          test "$(go env GOHOSTARCH)" = "$ARCH"
+      - run: ./scripts/bootstrap.sh --install-xcaddy
+      - name: Select plugin profile
+        run: |
+          enabled=0
+          if [[ "$PROFILE" == ratelimit ]]; then enabled=1; fi
+          awk -v enabled="$enabled" '
+            $2 == "github.com/mholt/caddy-ratelimit" { $1 = enabled }
+            { print }
+          ' config/plugins.conf > "$RUNNER_TEMP/caddyforge-plugins.conf"
+      - run: ./scripts/build.sh dist/caddyforge "$RUNNER_TEMP/caddyforge-plugins.conf"
+      - run: ./scripts/verify.sh dist/caddyforge
+      - run: python3 tests/http_smoke.py dist/caddyforge
+      - name: Package verified binary and metadata
+        run: |
+          mkdir -p packages
+          archive="caddyforge-${RELEASE_TAG}-linux-${ARCH}-${PROFILE}.tar.gz"
+          # Keep the executable bit and the artifact's internal SHA256SUMS intact.
+          tar -C dist -czf "packages/$archive" caddyforge
+          (cd packages && sha256sum "$archive" > "$archive.sha256")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.arch }}-${{ matrix.profile }}
+          path: packages/*
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    # A failed architecture/profile prevents creation of even a draft release.
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: release
+      - name: Verify all four archives and create aggregate checksums
+        working-directory: release
+        run: |
+          shopt -s nullglob
+          archives=(*.tar.gz)
+          test "${#archives[@]}" -eq 4
+          : > SHA256SUMS
+          for arch in amd64 arm64; do
+            for profile in default ratelimit; do
+              archive="caddyforge-${RELEASE_TAG}-linux-${arch}-${profile}.tar.gz"
+              test -f "$archive"
+              test -f "$archive.sha256"
+              sha256sum --check "$archive.sha256"
+              sha256sum "$archive" >> SHA256SUMS
+            done
+          done
+          sha256sum --check SHA256SUMS
+      - name: Create draft with complete assets, then publish
+        working-directory: release
+        run: |
+          cat > release-notes.md <<'NOTES'
+          Custom Caddy binaries for Linux amd64 and arm64.
+
+          - default: Coraza WAF + Cloudflare DNS
+          - ratelimit: Coraza WAF + Cloudflare DNS + Rate Limit
+
+          Each archive contains a caddyforge/ directory with the executable,
+          pinned input manifests, embedded dependency information, module list,
+          and internal SHA256SUMS. Plugin configuration is still required.
+          The tag is the CaddyForge release version; see versions.conf inside
+          the archive for the compiled Caddy version.
+
+          Download SHA256SUMS alongside all four archives and verify with:
+          sha256sum --check SHA256SUMS
+
+          Use the repository deployment scripts for systemd installation,
+          upgrades and rollback. Releases do not deploy to any server.
+          NOTES
+          flags=()
+          if [[ "$RELEASE_TAG" == *-* ]]; then flags+=(--prerelease); fi
+          # Do not replace a published release or silently create a missing tag.
+          # Upload failures leave a draft rather than a partially public release.
+          gh release create "$RELEASE_TAG" ./*.tar.gz SHA256SUMS \
+            --verify-tag --draft --title "CaddyForge $RELEASE_TAG" \
+            --notes-file release-notes.md "${flags[@]}"
+          gh release edit "$RELEASE_TAG" --draft=false

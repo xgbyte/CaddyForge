@@ -105,7 +105,44 @@ python3 tests/http_smoke.py dist/my-first-build
 
 基础测试使用临时目录与服务替身，覆盖输入拒绝、文件篡改、版本漂移、模块缺失、成功切换、配置失败、启动失败、健康检查失败、首次安装失败、信号中断及恢复失败报告。不会操作真实 systemd。
 
-GitHub Actions 在 PR/push/手动触发时检查 Bash 和 ShellCheck，在 Go 1.26/1.27 与 Linux amd64/arm64 上构建默认、限流组合并做本地 HTTP 检查，然后上传 CI 产物。工作流没有部署、推送和创建 Release 的权限。GitHub Actions 的执行结果只有推送后才会产生，当前本地结果见兼容性文档。
+GitHub Actions 在 PR/push/手动触发时检查 Bash 和 ShellCheck，在 Go 1.26/1.27 与 Linux amd64/arm64 上构建默认、限流组合并做本地 HTTP 检查，然后上传 CI 产物。普通 CI 工作流没有部署、推送和创建 Release 的权限。GitHub Actions 的执行结果只有推送后才会产生，当前本地结果见兼容性文档。
+
+## 自动发布到 GitHub Releases
+
+`.github/workflows/release.yml` 在推送 `v*` 标签时运行，接受 `v0.1.0` 或 `v0.1.0-rc.1` 这样的版本格式。标签表示 **CaddyForge 版本**；实际 Caddy 和插件版本仍由 `config/versions.conf`、`config/plugins.conf` 固定。预发布标签会生成 GitHub Pre-release。
+
+先提交并推送包含发布工作流的代码，再创建新标签：
+
+```bash
+git add .github/workflows/release.yml README.md docs/compatibility.md
+git commit -m "Add automated GitHub Releases"
+git push origin main
+git tag -a v0.1.0 -m "CaddyForge v0.1.0"
+git push origin v0.1.0
+```
+
+工作流先执行基础测试与 ShellCheck，然后使用 Go 1.26.x 在原生 Linux runner 上构建、验证和执行 HTTP 冒烟测试。四种组合全部成功后，才由独立发布任务创建 Release：
+
+```text
+caddyforge-v0.1.0-linux-amd64-default.tar.gz
+caddyforge-v0.1.0-linux-amd64-ratelimit.tar.gz
+caddyforge-v0.1.0-linux-arm64-default.tar.gz
+caddyforge-v0.1.0-linux-arm64-ratelimit.tar.gz
+SHA256SUMS
+```
+
+下载后选择服务器对应的架构和插件组合。每个压缩包内是完整的 `caddyforge/` 产物目录，保留可执行权限和内部清单，可交给部署脚本使用。外部 `SHA256SUMS` 校验压缩包，内部同名文件校验二进制与构建元数据。例如只下载了一个压缩包时：
+
+```bash
+# 与压缩包放在同一目录，使用 Linux sha256sum。
+grep '  caddyforge-v0.1.0-linux-amd64-default.tar.gz$' SHA256SUMS | sha256sum --check -
+tar -xzf caddyforge-v0.1.0-linux-amd64-default.tar.gz
+./caddyforge/caddy version
+```
+
+仅发布任务拥有 `contents: write`，使用 GitHub 自动提供的 `GITHUB_TOKEN`，无需额外配置 PAT。仓库/组织策略必须允许该权限及 GitHub Actions。工作流先上传全部文件到草稿，再公开发布，不部署服务器，也不覆盖已有 Release。若上传或公开步骤失败，检查 Actions 日志及对应草稿；确认后删除未发布草稿并重新运行失败的发布任务，或使用新标签。不要移动已发布标签来替换二进制。
+
+此工作流已在本地完成静态检查；真实 GitHub 发布只有推送代码和版本标签后才会执行。
 
 ## 维护与贡献
 
